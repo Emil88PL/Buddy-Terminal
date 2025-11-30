@@ -9,6 +9,10 @@ from textual.containers import Horizontal
 # NOTE: DataTable is used for type hinting RowSelected/CellSelected messages
 from textual.widgets import DataTable
 
+import asyncio
+import aiohttp
+
+
 
 # --- Server Logic ---
 # (TaskServer class remains unchanged from your last working version)
@@ -178,10 +182,23 @@ class TaskBuddyApp(App):
         self.query_one("#stat-todo").update(f"[#a0a0a0]Todo:[/] [#f1fa8c][b]{todo_count}[/b]")
         self.query_one("#stat-overdue").update(f"[#a0a0a0]Overdue:[/] [#ff5555][b]{overdue_count}[/b]")
 
+    async def sync_tasks_to_webapp(self):
+        """Send updated tasks back to the web app on port 2137"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                        'http://localhost:2137/tasks',
+                        json=self.server.current_tasks,
+                        headers={'Content-Type': 'application/json'}
+                ) as response:
+                    if response.status == 200:
+                        print("✓ Synced to web app")
+        except Exception as e:
+            print(f"Web app sync failed: {e}")
+
     def on_data_table_row_selected(self, event: DataTable.RowSelected):
         table = self.query_one(DataTable)
         current_row = event.cursor_row
-
         task_id = str(event.row_key.value)
 
         for task in self.server.current_tasks:
@@ -191,6 +208,9 @@ class TaskBuddyApp(App):
                     task["alarmTriggered"] = False
                 print(f"✓ TOGGLED (KEYBOARD): {task['name']} → {'DONE' if task['checked'] else 'TODO'}")
                 self._refresh_table(self.server.current_tasks)
+
+                # Sync back to web app
+                asyncio.create_task(self.sync_tasks_to_webapp())
 
                 if current_row < table.row_count:
                     table.move_cursor(row=current_row)
@@ -202,7 +222,6 @@ class TaskBuddyApp(App):
 
         table = self.query_one(DataTable)
         current_row = event.coordinate.row
-
         task_id = str(event.cell_key.row_key.value)
 
         for task in self.server.current_tasks:
@@ -212,6 +231,9 @@ class TaskBuddyApp(App):
                     task["alarmTriggered"] = False
                 print(f"✓ TOGGLED (CLICK): {task['name']} → {'DONE' if task['checked'] else 'TODO'}")
                 self._refresh_table(self.server.current_tasks)
+
+                # Sync back to web app
+                asyncio.create_task(self.sync_tasks_to_webapp())
 
                 if current_row < table.row_count:
                     table.move_cursor(row=current_row)
