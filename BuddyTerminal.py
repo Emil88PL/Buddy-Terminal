@@ -24,7 +24,7 @@ class TaskServer:
     async def start(self):
         self.runner = web.AppRunner(self.app)
         await self.runner.setup()
-        self.site = web.TCPSite(self.runner, '0.0.0.0', 3456)
+        self.site = web.TCPSite(self.runner, '0.0.0.0', 2137)
         await self.site.start()
 
     async def stop(self):
@@ -202,7 +202,7 @@ class TaskBuddyApp(App):
 
         self.server = TaskServer(self.update_tasks)
         await self.server.start()
-        self.query_one("#status").update("Server Running on Port 3456 • Waiting for tasks...")
+        self.query_one("#status").update("Server Running on Port 2137 • Waiting for tasks...")
 
     async def on_unmount(self) -> None:
         if self.server:
