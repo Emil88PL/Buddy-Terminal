@@ -28,12 +28,13 @@ Built with [Textual](https://github.com/Textualize/textual) for smooth performan
 
 ## Connected Buddy Terminal
 
-![img_3.png](img_3.png)
+![img_6.png](img_6.png)
+> ###### (Running with Task Buddy)
 
 ## How It Works
 
 1. **Web App Integration:**  
-   Your DidITakeIT web app sends task data to the terminal server running on port `3456`
+   Your DidITakeIT web app sends task data to the terminal server running on port `2137`
 
 2. **Terminal Display:**  
    Buddy Terminal receives the updates and displays them in a beautiful table format
@@ -80,7 +81,7 @@ python BuddyTerminal.py
 
 ## Configuration
 
-**Port:** The server runs on port `3456` by default  
+**Port:** The server runs on port `2137` by default  
 **CORS:** Accepts connections from any origin (localhost-friendly)
 
 ## Technical Details
@@ -100,7 +101,7 @@ python BuddyTerminal.py
 ## Troubleshooting
 
 - You can check status in the settings
-![img_5.png](img_5.png)
+![img_7.png](img_7.png)
 - if it is showing **Disconnected** simply click "Reset Task Buddy connection"
 
 
@@ -122,11 +123,8 @@ The main task reminder web application
 
 Task Buddy is an Express.js application that reads your tasks out loud using text-to-speech. It connects to the same DidITakeIT web app and:
 - Announces tasks vocally when they're due
-- **AI-Powered Motivation** - If you have [Ollama](https://ollama.ai/) installed, it generates unique motivational messages to help you complete each task
+- **AI-Powered Motivation** - If you have [Ollama](https://ollama.ai/) installed (llama3), it generates unique motivational messages to help you complete each task
 - Available as executable for Windows and Linux
-
-> **Note:** Task Buddy and Buddy Terminal currently share port `3456`. The web app will be updated soon to support both running simultaneously on different ports.
-
 ---
 
 Made with ❤️ and Python | [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/N4N51E08N8)
