@@ -178,11 +178,11 @@ class TaskBuddyApp(App):
         self.query_one("#stat-todo").update(f"[#a0a0a0]Todo:[/] [#f1fa8c][b]{todo_count}[/b]")
         self.query_one("#stat-overdue").update(f"[#a0a0a0]Overdue:[/] [#ff5555][b]{overdue_count}[/b]")
 
-    # --- KEYBOARD/ENTER/SPACE HANDLER (NEW) ---
     def on_data_table_row_selected(self, event: DataTable.RowSelected):
-        """Handle Enter/Space keypress on a selected row."""
-        # This is triggered by Enter or Space when the cursor is over a row.
-        task_id = str(event.row_key.value) # Access row_key value directly
+        table = self.query_one(DataTable)
+        current_row = event.cursor_row
+
+        task_id = str(event.row_key.value)
 
         for task in self.server.current_tasks:
             if str(task.get("id")) == task_id:
@@ -191,15 +191,18 @@ class TaskBuddyApp(App):
                     task["alarmTriggered"] = False
                 print(f"✓ TOGGLED (KEYBOARD): {task['name']} → {'DONE' if task['checked'] else 'TODO'}")
                 self._refresh_table(self.server.current_tasks)
+
+                if current_row < table.row_count:
+                    table.move_cursor(row=current_row)
                 return
 
-    # --- MOUSE CLICK HANDLER (UPDATED) ---
     def on_data_table_cell_selected(self, event: DataTable.CellSelected):
-        """Handle mouse click on a cell."""
         if event.cell_key.row_key is None:
             return
 
-        # Use .value to ensure we get the key value
+        table = self.query_one(DataTable)
+        current_row = event.coordinate.row
+
         task_id = str(event.cell_key.row_key.value)
 
         for task in self.server.current_tasks:
@@ -209,6 +212,9 @@ class TaskBuddyApp(App):
                     task["alarmTriggered"] = False
                 print(f"✓ TOGGLED (CLICK): {task['name']} → {'DONE' if task['checked'] else 'TODO'}")
                 self._refresh_table(self.server.current_tasks)
+
+                if current_row < table.row_count:
+                    table.move_cursor(row=current_row)
                 return
 
 
