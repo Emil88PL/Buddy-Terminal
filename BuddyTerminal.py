@@ -1,30 +1,29 @@
 import asyncio
 from datetime import datetime, timezone
 import traceback
+import json
 
 from aiohttp import web
 from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, DataTable, Static
 from textual.containers import Horizontal
-# NOTE: DataTable is used for type hinting RowSelected/CellSelected messages
 from textual.widgets import DataTable
 
 import asyncio
 import aiohttp
 
 
-
-# --- Server Logic ---
-# (TaskServer class remains unchanged from your last working version)
 class TaskServer:
     def __init__(self, update_callback):
         self.update_callback = update_callback
         self.current_tasks = []
+        self.sse_clients = []
         self.app = web.Application()
         self.app.add_routes([
             web.options('/tasks', self.handle_options),
             web.post('/tasks', self.handle_tasks),
             web.get('/tasks', self.handle_get_tasks),
+            web.get('/tasks/stream', self.handle_sse),
             web.get('/ping', self.handle_ping),
             web.options('/ping', self.handle_options),
         ])
@@ -36,7 +35,7 @@ class TaskServer:
         await self.runner.setup()
         self.site = web.TCPSite(self.runner, '0.0.0.0', 2137)
         await self.site.start()
-        print(f"DEBUG: Server started on port 2137")
+        print(f"DEBUG: Server started on port 2137 with SSE support")
 
     async def stop(self):
         if self.site:
@@ -58,11 +57,67 @@ class TaskServer:
     async def handle_get_tasks(self, request):
         return web.json_response(self.current_tasks, headers={'Access-Control-Allow-Origin': '*'})
 
+    async def handle_sse(self, request):
+        response = web.StreamResponse(
+            status=200,
+            reason='OK',
+            headers={
+                'Content-Type': 'text/event-stream',
+                'Cache-Control': 'no-cache',
+                'Access-Control-Allow-Origin': '*',
+                'Connection': 'keep-alive',
+            }
+        )
+        await response.prepare(request)
+
+        self.sse_clients.append(response)
+        print(f"✓ SSE client connected (total: {len(self.sse_clients)})")
+
+        try:
+            await response.write(f"data: {json.dumps(self.current_tasks)}\n\n".encode('utf-8'))
+
+            while True:
+                await asyncio.sleep(30)
+                try:
+                    await response.write(": keepalive\n\n".encode('utf-8'))
+                except:
+                    break
+        except Exception as e:
+            print(f"SSE client disconnected: {e}")
+        finally:
+            if response in self.sse_clients:
+                self.sse_clients.remove(response)
+            print(f"✓ SSE client removed (remaining: {len(self.sse_clients)})")
+
+        return response
+
+    async def broadcast_tasks(self):
+        """Send updated tasks to all connected browsers via SSE"""
+        if not self.sse_clients:
+            return
+
+        message = f"data: {json.dumps(self.current_tasks)}\n\n".encode('utf-8')
+        disconnected = []
+
+        for client in self.sse_clients:
+            try:
+                await client.write(message)
+            except Exception as e:
+                print(f"Failed to send to SSE client: {e}")
+                disconnected.append(client)
+
+        for client in disconnected:
+            if client in self.sse_clients:
+                self.sse_clients.remove(client)
+
     async def handle_tasks(self, request):
         try:
             data = await request.json()
             self.current_tasks = data
             self.update_callback(data)
+
+            await self.broadcast_tasks()
+
             return web.Response(text="Received", headers={'Access-Control-Allow-Origin': '*'})
         except Exception as e:
             traceback.print_exc()
@@ -185,16 +240,10 @@ class TaskBuddyApp(App):
     async def sync_tasks_to_webapp(self):
         """Send updated tasks back to the web app on port 2137"""
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                        'http://localhost:2137/tasks',
-                        json=self.server.current_tasks,
-                        headers={'Content-Type': 'application/json'}
-                ) as response:
-                    if response.status == 200:
-                        print("✓ Synced to web app")
+            await self.server.broadcast_tasks()
+            print("✓ Broadcasted to all connected browsers")
         except Exception as e:
-            print(f"Web app sync failed: {e}")
+            print(f"Broadcast failed: {e}")
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected):
         table = self.query_one(DataTable)
@@ -209,7 +258,6 @@ class TaskBuddyApp(App):
                 print(f"✓ TOGGLED (KEYBOARD): {task['name']} → {'DONE' if task['checked'] else 'TODO'}")
                 self._refresh_table(self.server.current_tasks)
 
-                # Sync back to web app
                 asyncio.create_task(self.sync_tasks_to_webapp())
 
                 if current_row < table.row_count:
@@ -232,7 +280,6 @@ class TaskBuddyApp(App):
                 print(f"✓ TOGGLED (CLICK): {task['name']} → {'DONE' if task['checked'] else 'TODO'}")
                 self._refresh_table(self.server.current_tasks)
 
-                # Sync back to web app
                 asyncio.create_task(self.sync_tasks_to_webapp())
 
                 if current_row < table.row_count:
