@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import traceback
 import json
 
@@ -30,6 +30,49 @@ class TaskServer:
         self.runner = None
         self.site = None
 
+    def update_task_dates_to_today(self, tasks):
+        """Update task dates to today if they're from a previous day (matches frontend logic)"""
+        if not isinstance(tasks, list):
+            return tasks
+
+        now = datetime.now(timezone.utc)
+        today = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+
+        changed = False
+        for task in tasks:
+            due_time_str = task.get('dueTime')
+            if not due_time_str:
+                continue
+
+            try:
+                # Parse the due time
+                due_time_str = due_time_str.replace('Z', '+00:00')
+                task_due = datetime.fromisoformat(due_time_str)
+                if task_due.tzinfo is None:
+                    task_due = task_due.replace(tzinfo=timezone.utc)
+
+                # Get task's date (without time)
+                task_due_date = datetime(task_due.year, task_due.month, task_due.day, tzinfo=timezone.utc)
+
+                # If task's due date is before today, update it to today (preserving the time)
+                if task_due_date < today:
+                    new_due_time = datetime(
+                        today.year, today.month, today.day,
+                        task_due.hour, task_due.minute, task_due.second, task_due.microsecond,
+                        tzinfo=timezone.utc
+                    )
+                    task['dueTime'] = new_due_time.isoformat()
+                    task['alarmTriggered'] = False
+                    task['checked'] = False
+                    changed = True
+                    print(f"✓ Updated task '{task.get('name')}' date from {task_due_date.date()} to {today.date()}")
+
+            except Exception as e:
+                print(f"Error updating date for task {task.get('name')}: {e}")
+                continue
+
+        return tasks
+
     async def start(self):
         self.runner = web.AppRunner(self.app)
         await self.runner.setup()
@@ -55,7 +98,9 @@ class TaskServer:
         return web.Response(text="pong", headers={'Access-Control-Allow-Origin': '*'})
 
     async def handle_get_tasks(self, request):
-        return web.json_response(self.current_tasks, headers={'Access-Control-Allow-Origin': '*'})
+        # Update dates before sending
+        updated_tasks = self.update_task_dates_to_today(self.current_tasks)
+        return web.json_response(updated_tasks, headers={'Access-Control-Allow-Origin': '*'})
 
     async def handle_sse(self, request):
         response = web.StreamResponse(
@@ -74,7 +119,9 @@ class TaskServer:
         print(f"✓ SSE client connected (total: {len(self.sse_clients)})")
 
         try:
-            await response.write(f"data: {json.dumps(self.current_tasks)}\n\n".encode('utf-8'))
+            # Update dates before sending initial data
+            updated_tasks = self.update_task_dates_to_today(self.current_tasks)
+            await response.write(f"data: {json.dumps(updated_tasks)}\n\n".encode('utf-8'))
 
             while True:
                 await asyncio.sleep(30)
@@ -96,7 +143,9 @@ class TaskServer:
         if not self.sse_clients:
             return
 
-        message = f"data: {json.dumps(self.current_tasks)}\n\n".encode('utf-8')
+        # Update dates before broadcasting
+        updated_tasks = self.update_task_dates_to_today(self.current_tasks)
+        message = f"data: {json.dumps(updated_tasks)}\n\n".encode('utf-8')
         disconnected = []
 
         for client in self.sse_clients:
@@ -113,8 +162,9 @@ class TaskServer:
     async def handle_tasks(self, request):
         try:
             data = await request.json()
-            self.current_tasks = data
-            self.update_callback(data)
+            # Update dates when receiving tasks from frontend
+            self.current_tasks = self.update_task_dates_to_today(data)
+            self.update_callback(self.current_tasks)
 
             await self.broadcast_tasks()
 
