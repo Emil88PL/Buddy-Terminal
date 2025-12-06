@@ -18,6 +18,7 @@ class TaskServer:
         self.update_callback = update_callback
         self.current_tasks = []
         self.sse_clients = []
+        self.last_date_check = None  # Track when we last checked dates
         self.app = web.Application()
         self.app.add_routes([
             web.options('/tasks', self.handle_options),
@@ -30,9 +31,24 @@ class TaskServer:
         self.runner = None
         self.site = None
 
+    def should_update_dates(self):
+        """Check if we should update dates (only once per day)"""
+        now = datetime.now(timezone.utc)
+        today = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+
+        # Update if we haven't checked today, or if it's the first check
+        if self.last_date_check is None or self.last_date_check < today:
+            self.last_date_check = now
+            return True
+        return False
+
     def update_task_dates_to_today(self, tasks):
         """Update task dates to today if they're from a previous day (matches frontend logic)"""
         if not isinstance(tasks, list):
+            return tasks
+
+        # Only update dates once per day to avoid overriding real-time overdue status
+        if not self.should_update_dates():
             return tasks
 
         now = datetime.now(timezone.utc)
@@ -98,9 +114,8 @@ class TaskServer:
         return web.Response(text="pong", headers={'Access-Control-Allow-Origin': '*'})
 
     async def handle_get_tasks(self, request):
-        # Update dates before sending
-        updated_tasks = self.update_task_dates_to_today(self.current_tasks)
-        return web.json_response(updated_tasks, headers={'Access-Control-Allow-Origin': '*'})
+        # Don't update dates on GET - just return current state
+        return web.json_response(self.current_tasks, headers={'Access-Control-Allow-Origin': '*'})
 
     async def handle_sse(self, request):
         response = web.StreamResponse(
@@ -119,9 +134,12 @@ class TaskServer:
         print(f"✓ SSE client connected (total: {len(self.sse_clients)})")
 
         try:
-            # Update dates before sending initial data
-            updated_tasks = self.update_task_dates_to_today(self.current_tasks)
-            await response.write(f"data: {json.dumps(updated_tasks)}\n\n".encode('utf-8'))
+            # Check if we need to update dates (only on first connection of the day)
+            if self.current_tasks and self.should_update_dates():
+                print("🔄 First SSE connection today - checking if dates need updating...")
+                self.current_tasks = self.update_task_dates_to_today(self.current_tasks)
+
+            await response.write(f"data: {json.dumps(self.current_tasks)}\n\n".encode('utf-8'))
 
             while True:
                 await asyncio.sleep(30)
@@ -143,9 +161,8 @@ class TaskServer:
         if not self.sse_clients:
             return
 
-        # Update dates before broadcasting
-        updated_tasks = self.update_task_dates_to_today(self.current_tasks)
-        message = f"data: {json.dumps(updated_tasks)}\n\n".encode('utf-8')
+        # Don't update dates when broadcasting - just send current state
+        message = f"data: {json.dumps(self.current_tasks)}\n\n".encode('utf-8')
         disconnected = []
 
         for client in self.sse_clients:
@@ -162,8 +179,8 @@ class TaskServer:
     async def handle_tasks(self, request):
         try:
             data = await request.json()
-            # Update dates when receiving tasks from frontend
-            self.current_tasks = self.update_task_dates_to_today(data)
+            # Don't update dates when receiving from frontend - accept their state
+            self.current_tasks = data
             self.update_callback(self.current_tasks)
 
             await self.broadcast_tasks()
