@@ -7,8 +7,8 @@ from aiohttp import web
 from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, DataTable, Static, Input
 from textual.containers import Horizontal, Vertical
-from textual.widgets import DataTable
 from textual.screen import ModalScreen
+from textual.worker import Worker, WorkerState
 
 
 class TaskServer:
@@ -180,6 +180,8 @@ class TaskServer:
             return web.Response(status=500, text=str(e), headers={'Access-Control-Allow-Origin': '*'})
 
 
+# ==================== MODAL SCREENS ====================
+
 # Modal screen for editing task name
 class EditTaskScreen(ModalScreen):
     CSS = """
@@ -220,27 +222,186 @@ class EditTaskScreen(ModalScreen):
     def __init__(self, task_name: str):
         super().__init__()
         self.task_name = task_name
-        self.new_name = None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="edit-dialog"):
             yield Static("Edit Task Name", id="edit-title")
-            yield Input(value=self.task_name, placeholder="Task name", id="edit-input")
+            yield Input(
+                value=self.task_name,
+                placeholder="Task name",
+                id="edit-input",
+            )
             yield Static("Press Enter to save, Escape to cancel", id="edit-help")
 
     def on_mount(self) -> None:
-        self.query_one(Input).focus()
+        input_widget = self.query_one("#edit-input", Input)
+        input_widget.focus()
+        input_widget.cursor_position = len(self.task_name)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        self.new_name = event.value
-        self.dismiss(self.new_name)
+        """Handle Enter key from Input widget"""
+        self.dismiss(event.value)
 
-    def on_key(self, event) -> None:
-        if event.key == "escape":
-            self.dismiss(None)
+    def key_escape(self) -> None:
+        """Handle Escape key"""
+        self.dismiss(None)
 
 
-# --- Textual UI Logic ---
+# Modal screen for adding new task
+class AddTaskScreen(ModalScreen):
+    CSS = """
+    AddTaskScreen {
+        align: center middle;
+    }
+
+    #add-dialog {
+        width: 60;
+        height: 15;
+        background: #2a2a2a;
+        border: heavy #4a4a4a;
+        padding: 1 2;
+    }
+
+    #add-title {
+        width: 100%;
+        height: 3;
+        content-align: center middle;
+        text-style: bold;
+        color: #49dfb7;
+    }
+
+    .input-container {
+        width: 100%;
+        height: auto;
+        margin-top: 1;
+    }
+
+    .input-label {
+        width: 100%;
+        color: #a0a0a0;
+        margin-bottom: 0;
+    }
+
+    #task-name-input, #task-time-input {
+        width: 100%;
+    }
+
+    #add-help {
+        width: 100%;
+        height: 2;
+        content-align: center middle;
+        color: #a0a0a0;
+        margin-top: 1;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="add-dialog"):
+            yield Static("Add New Task", id="add-title")
+
+            with Vertical(classes="input-container"):
+                yield Static("Task Name:", classes="input-label")
+                yield Input(
+                    placeholder="Enter task name",
+                    id="task-name-input",
+                )
+
+            with Vertical(classes="input-container"):
+                yield Static("Due Time (HH:MM):", classes="input-label")
+                yield Input(
+                    placeholder="14:30",
+                    id="task-time-input",
+                )
+
+            yield Static("Tab to switch • Enter to save • Escape to cancel", id="add-help")
+
+    def on_mount(self) -> None:
+        self.query_one("#task-name-input", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle Enter key - collect both inputs and return"""
+        task_name = self.query_one("#task-name-input", Input).value.strip()
+        task_time = self.query_one("#task-time-input", Input).value.strip()
+
+        if task_name and task_time:
+            self.dismiss({"name": task_name, "time": task_time})
+        else:
+            # Focus on the empty field
+            if not task_name:
+                self.query_one("#task-name-input", Input).focus()
+            elif not task_time:
+                self.query_one("#task-time-input", Input).focus()
+
+    def key_escape(self) -> None:
+        """Handle Escape key"""
+        self.dismiss(None)
+
+
+# Modal screen for delete confirmation
+class DeleteConfirmScreen(ModalScreen):
+    CSS = """
+    DeleteConfirmScreen {
+        align: center middle;
+    }
+
+    #delete-dialog {
+        width: 60;
+        height: 11;
+        background: #2a2a2a;
+        border: heavy #ff5555;
+        padding: 1 2;
+    }
+
+    #delete-title {
+        width: 100%;
+        height: 3;
+        content-align: center middle;
+        text-style: bold;
+        color: #ff5555;
+    }
+
+    #delete-message {
+        width: 100%;
+        height: 3;
+        content-align: center middle;
+        color: #ffffff;
+        margin-top: 1;
+    }
+
+    #delete-help {
+        width: 100%;
+        height: 2;
+        content-align: center middle;
+        color: #a0a0a0;
+        margin-top: 1;
+    }
+    """
+
+    def __init__(self, task_name: str):
+        super().__init__()
+        self.task_name = task_name
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="delete-dialog"):
+            yield Static("⚠️  Delete Task?", id="delete-title")
+            yield Static(f'"{self.task_name}"', id="delete-message")
+            yield Static("Press Y to confirm • N or Escape to cancel", id="delete-help")
+
+    def key_y(self) -> None:
+        """Confirm deletion"""
+        self.dismiss(True)
+
+    def key_n(self) -> None:
+        """Cancel deletion"""
+        self.dismiss(False)
+
+    def key_escape(self) -> None:
+        """Cancel deletion"""
+        self.dismiss(False)
+
+
+# ==================== MAIN APP ====================
+
 class TaskBuddyApp(App):
     CSS = """
     Screen { background: #373636; align: center middle; }
@@ -261,6 +422,11 @@ class TaskBuddyApp(App):
 
     BINDINGS = [
         ("q", "quit", "Quit"),
+        ("a", "decrease_time", "Time -1min"),
+        ("d", "increase_time", "Time +1min"),
+        ("u", "edit_task", "Edit Name"),
+        ("n", "add_task", "New Task"),
+        ("x", "delete_task", "Delete"),
     ]
 
     def compose(self) -> ComposeResult:
@@ -288,39 +454,20 @@ class TaskBuddyApp(App):
 
         self.query_one("#status").update("Server Running on Port 2137 • Waiting for tasks...")
 
-    def on_key(self, event) -> None:
-        """Handle key presses globally"""
-        if event.key == "a":
-            self.adjust_task_time(-1)
-            event.prevent_default()
-            event.stop()
-        elif event.key == "d":
-            self.adjust_task_time(1)
-            event.prevent_default()
-            event.stop()
-        elif event.key == "u":
-            asyncio.create_task(self.action_edit_task_name())
-            event.prevent_default()
-            event.stop()
-        elif event.key == "up":
-            # Allow up arrow to move cursor normally
-            pass
-        elif event.key == "down":
-            # Allow down arrow to move cursor normally
-            pass
-
     async def on_unmount(self) -> None:
-        """Cleanup when the app is closed (Ctrl+C or 'q')."""
+        """Cleanup when the app is closed"""
         if hasattr(self, 'server'):
             await self.server.stop()
 
     def update_tasks(self, tasks):
+        """Callback from server to update UI"""
         self.call_later(self._refresh_table, tasks)
 
     def _refresh_table(self, tasks):
+        """Refresh the table display"""
         table = self.query_one(DataTable)
 
-        # Save current row key (if any)
+        # Save current row key
         previous_key = None
         if table.cursor_row is not None and table.row_count:
             for idx, key in enumerate(table.rows.keys()):
@@ -328,7 +475,6 @@ class TaskBuddyApp(App):
                     previous_key = key
                     break
 
-        # Clear once, before repopulating
         table.clear()
 
         if not isinstance(tasks, list):
@@ -377,7 +523,7 @@ class TaskBuddyApp(App):
 
             table.add_row(status, time_str, style_name, key=task_id)
 
-        # Restore cursor by key after table is fully rebuilt
+        # Restore cursor
         if previous_key is not None and table.row_count:
             for idx, key in enumerate(table.rows.keys()):
                 if key == previous_key:
@@ -399,7 +545,6 @@ class TaskBuddyApp(App):
             return None
 
         try:
-            # Get the row key from the cursor position
             row_key = None
             for idx, key in enumerate(table.rows.keys()):
                 if idx == table.cursor_row:
@@ -416,98 +561,190 @@ class TaskBuddyApp(App):
                     return task
         except Exception as e:
             print(f"Error getting selected task: {e}")
-            import traceback
             traceback.print_exc()
 
         return None
 
     def adjust_task_time(self, minutes_delta: int):
-        """Adjust the selected task's time by the given number of minutes"""
+        """Adjust the selected task's time"""
         task = self.get_selected_task()
         if not task:
-            print("No task selected")
             return
 
-        # Save current cursor position
         table = self.query_one(DataTable)
         current_row = table.cursor_row
 
         due_str = task.get('dueTime')
         if not due_str:
-            print("Task has no due time")
             return
 
         try:
-            # Parse current due time
             due_str = due_str.replace('Z', '+00:00')
             due_time = datetime.fromisoformat(due_str)
             if due_time.tzinfo is None:
                 due_time = due_time.replace(tzinfo=timezone.utc)
 
-            # Add minutes (timedelta handles hour rollover automatically)
             new_due_time = due_time + timedelta(minutes=minutes_delta)
-
-            # Update task
             task['dueTime'] = new_due_time.isoformat()
-            task['isPreset'] = False  # Mark as manually edited
+            task['isPreset'] = False
 
             print(f"✓ Adjusted '{task['name']}' time by {minutes_delta} min: {new_due_time.strftime('%H:%M')}")
 
-            # Refresh display and broadcast
             self._refresh_table(self.server.current_tasks)
             asyncio.create_task(self.sync_tasks_to_webapp())
 
-            # Restore cursor position after refresh
             if current_row is not None and current_row < table.row_count:
                 table.move_cursor(row=current_row)
 
         except Exception as e:
             print(f"Error adjusting time: {e}")
 
-    async def action_decrease_time(self):
+    def action_decrease_time(self):
         """Decrease selected task time by 1 minute"""
         self.adjust_task_time(-1)
 
-    async def action_increase_time(self):
+    def action_increase_time(self):
         """Increase selected task time by 1 minute"""
         self.adjust_task_time(1)
 
-    async def action_edit_task_name(self):
-        """Edit the selected task's name"""
+    def action_edit_task(self):
+        """Edit the selected task's name - runs in worker"""
+        self.run_worker(self._edit_task_worker(), exclusive=True)
+
+    async def _edit_task_worker(self):
+        """Worker method for editing task"""
         task = self.get_selected_task()
         if not task:
             print("No task selected")
             return
 
-        # Save current cursor position
         table = self.query_one(DataTable)
         current_row = table.cursor_row
-
         current_name = task.get('name', '')
 
-        # Show modal screen for editing
         result = await self.push_screen_wait(EditTaskScreen(current_name))
 
-        if result and result.strip():  # User pressed Enter with a non-empty value
+        if result and result.strip():
             task['name'] = result.strip()
-            task['isPreset'] = False  # Mark as manually edited
-            print(f"✓ Updated task name to: {result}")
+            task['isPreset'] = False
+            print(f"✓ Updated task name to: '{result.strip()}'")
 
-            # Refresh display and broadcast
             self._refresh_table(self.server.current_tasks)
             asyncio.create_task(self.sync_tasks_to_webapp())
 
-            # Restore cursor position and focus after refresh
             if current_row is not None and current_row < table.row_count:
                 table.move_cursor(row=current_row)
             table.focus()
         else:
-            print("Task name update cancelled or empty")
-            # Just restore focus if cancelled
+            print("Task name update cancelled")
+            table.focus()
+
+    def action_add_task(self):
+        """Add a new task - runs in worker"""
+        self.run_worker(self._add_task_worker(), exclusive=True)
+
+    async def _add_task_worker(self):
+        """Worker method for adding task"""
+        result = await self.push_screen_wait(AddTaskScreen())
+
+        if result and isinstance(result, dict):
+            task_name = result.get("name", "").strip()
+            task_time = result.get("time", "").strip()
+
+            if task_name and task_time:
+                try:
+                    # Parse time (HH:MM format)
+                    hours, minutes = map(int, task_time.split(':'))
+
+                    # Create due time for today
+                    now = datetime.now(timezone.utc)
+                    due_time = datetime(
+                        now.year, now.month, now.day,
+                        hours, minutes, 0, 0,
+                        tzinfo=timezone.utc
+                    )
+
+                    # Generate unique ID
+                    task_id = str(int(datetime.now().timestamp() * 1000))
+
+                    # Create new task
+                    new_task = {
+                        "id": task_id,
+                        "name": task_name,
+                        "dueTime": due_time.isoformat(),
+                        "checked": False,
+                        "alarmTriggered": False,
+                        "isPreset": False
+                    }
+
+                    self.server.current_tasks.append(new_task)
+                    print(f"✓ Added new task: '{task_name}' at {task_time}")
+
+                    self._refresh_table(self.server.current_tasks)
+                    asyncio.create_task(self.sync_tasks_to_webapp())
+
+                    # Move cursor to the new task
+                    table = self.query_one(DataTable)
+                    for idx, key in enumerate(table.rows.keys()):
+                        if str(key.value) == task_id:
+                            table.move_cursor(row=idx)
+                            break
+                    table.focus()
+
+                except ValueError:
+                    print(f"❌ Invalid time format: {task_time}. Use HH:MM (e.g., 14:30)")
+                except Exception as e:
+                    print(f"❌ Error adding task: {e}")
+        else:
+            print("Add task cancelled")
+
+        table = self.query_one(DataTable)
+        table.focus()
+
+    def action_delete_task(self):
+        """Delete the selected task - runs in worker"""
+        self.run_worker(self._delete_task_worker(), exclusive=True)
+
+    async def _delete_task_worker(self):
+        """Worker method for deleting task"""
+        task = self.get_selected_task()
+        if not task:
+            print("No task selected")
+            return
+
+        task_name = task.get('name', 'Unknown')
+
+        # Show confirmation dialog
+        confirmed = await self.push_screen_wait(DeleteConfirmScreen(task_name))
+
+        if confirmed:
+            table = self.query_one(DataTable)
+            current_row = table.cursor_row
+
+            # Remove task from list
+            task_id = task.get('id')
+            self.server.current_tasks = [
+                t for t in self.server.current_tasks
+                if t.get('id') != task_id
+            ]
+
+            print(f"✓ Deleted task: '{task_name}'")
+
+            self._refresh_table(self.server.current_tasks)
+            asyncio.create_task(self.sync_tasks_to_webapp())
+
+            # Move cursor to previous position or one up
+            if table.row_count > 0:
+                new_row = min(current_row, table.row_count - 1) if current_row is not None else 0
+                table.move_cursor(row=new_row)
+            table.focus()
+        else:
+            print("Delete cancelled")
+            table = self.query_one(DataTable)
             table.focus()
 
     async def sync_tasks_to_webapp(self):
-        """Send updated tasks back to the web app on port 2137"""
+        """Send updated tasks back to the web app"""
         try:
             await self.server.broadcast_tasks()
             print("✓ Broadcasted to all connected browsers")
@@ -515,6 +752,7 @@ class TaskBuddyApp(App):
             print(f"Broadcast failed: {e}")
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected):
+        """Handle row selection (Enter key on row)"""
         table = self.query_one(DataTable)
         current_row = event.cursor_row
         task_id = str(event.row_key.value)
@@ -524,9 +762,9 @@ class TaskBuddyApp(App):
                 task["checked"] = not task.get("checked", False)
                 if task["checked"]:
                     task["alarmTriggered"] = False
-                print(f"✓ TOGGLED (KEYBOARD): {task['name']} → {'DONE' if task['checked'] else 'TODO'}")
-                self._refresh_table(self.server.current_tasks)
+                print(f"✓ TOGGLED: {task['name']} → {'DONE' if task['checked'] else 'TODO'}")
 
+                self._refresh_table(self.server.current_tasks)
                 asyncio.create_task(self.sync_tasks_to_webapp())
 
                 if current_row < table.row_count:
@@ -534,6 +772,7 @@ class TaskBuddyApp(App):
                 return
 
     def on_data_table_cell_selected(self, event: DataTable.CellSelected):
+        """Handle cell selection (clicking on cell)"""
         if event.cell_key.row_key is None:
             return
 
@@ -546,9 +785,9 @@ class TaskBuddyApp(App):
                 task["checked"] = not task.get("checked", False)
                 if task["checked"]:
                     task["alarmTriggered"] = False
-                print(f"✓ TOGGLED (CLICK): {task['name']} → {'DONE' if task['checked'] else 'TODO'}")
-                self._refresh_table(self.server.current_tasks)
+                print(f"✓ TOGGLED: {task['name']} → {'DONE' if task['checked'] else 'TODO'}")
 
+                self._refresh_table(self.server.current_tasks)
                 asyncio.create_task(self.sync_tasks_to_webapp())
 
                 if current_row < table.row_count:
