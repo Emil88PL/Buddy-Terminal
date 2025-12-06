@@ -5,12 +5,10 @@ import json
 
 from aiohttp import web
 from textual.app import App, ComposeResult
-from textual.widgets import Header, Footer, DataTable, Static
-from textual.containers import Horizontal
+from textual.widgets import Header, Footer, DataTable, Static, Input
+from textual.containers import Horizontal, Vertical
 from textual.widgets import DataTable
-
-import asyncio
-import aiohttp
+from textual.screen import ModalScreen
 
 
 class TaskServer:
@@ -18,7 +16,7 @@ class TaskServer:
         self.update_callback = update_callback
         self.current_tasks = []
         self.sse_clients = []
-        self.last_date_check = None  # Track when we last checked dates
+        self.last_date_check = None
         self.app = web.Application()
         self.app.add_routes([
             web.options('/tasks', self.handle_options),
@@ -36,18 +34,16 @@ class TaskServer:
         now = datetime.now(timezone.utc)
         today = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
 
-        # Update if we haven't checked today, or if it's the first check
         if self.last_date_check is None or self.last_date_check < today:
             self.last_date_check = now
             return True
         return False
 
     def update_task_dates_to_today(self, tasks):
-        """Update task dates to today if they're from a previous day (matches frontend logic)"""
+        """Update task dates to today if they're from a previous day"""
         if not isinstance(tasks, list):
             return tasks
 
-        # Only update dates once per day to avoid overriding real-time overdue status
         if not self.should_update_dates():
             return tasks
 
@@ -61,16 +57,13 @@ class TaskServer:
                 continue
 
             try:
-                # Parse the due time
                 due_time_str = due_time_str.replace('Z', '+00:00')
                 task_due = datetime.fromisoformat(due_time_str)
                 if task_due.tzinfo is None:
                     task_due = task_due.replace(tzinfo=timezone.utc)
 
-                # Get task's date (without time)
                 task_due_date = datetime(task_due.year, task_due.month, task_due.day, tzinfo=timezone.utc)
 
-                # If task's due date is before today, update it to today (preserving the time)
                 if task_due_date < today:
                     new_due_time = datetime(
                         today.year, today.month, today.day,
@@ -114,7 +107,6 @@ class TaskServer:
         return web.Response(text="pong", headers={'Access-Control-Allow-Origin': '*'})
 
     async def handle_get_tasks(self, request):
-        # Don't update dates on GET - just return current state
         return web.json_response(self.current_tasks, headers={'Access-Control-Allow-Origin': '*'})
 
     async def handle_sse(self, request):
@@ -134,7 +126,6 @@ class TaskServer:
         print(f"✓ SSE client connected (total: {len(self.sse_clients)})")
 
         try:
-            # Check if we need to update dates (only on first connection of the day)
             if self.current_tasks and self.should_update_dates():
                 print("🔄 First SSE connection today - checking if dates need updating...")
                 self.current_tasks = self.update_task_dates_to_today(self.current_tasks)
@@ -161,7 +152,6 @@ class TaskServer:
         if not self.sse_clients:
             return
 
-        # Don't update dates when broadcasting - just send current state
         message = f"data: {json.dumps(self.current_tasks)}\n\n".encode('utf-8')
         disconnected = []
 
@@ -179,7 +169,6 @@ class TaskServer:
     async def handle_tasks(self, request):
         try:
             data = await request.json()
-            # Don't update dates when receiving from frontend - accept their state
             self.current_tasks = data
             self.update_callback(self.current_tasks)
 
@@ -189,6 +178,66 @@ class TaskServer:
         except Exception as e:
             traceback.print_exc()
             return web.Response(status=500, text=str(e), headers={'Access-Control-Allow-Origin': '*'})
+
+
+# Modal screen for editing task name
+class EditTaskScreen(ModalScreen):
+    CSS = """
+    EditTaskScreen {
+        align: center middle;
+    }
+
+    #edit-dialog {
+        width: 60;
+        height: 11;
+        background: #2a2a2a;
+        border: heavy #4a4a4a;
+        padding: 1 2;
+    }
+
+    #edit-title {
+        width: 100%;
+        height: 3;
+        content-align: center middle;
+        text-style: bold;
+        color: #49dfb7;
+    }
+
+    #edit-input {
+        width: 100%;
+        margin-top: 1;
+        margin-bottom: 1;
+    }
+
+    #edit-help {
+        width: 100%;
+        height: 2;
+        content-align: center middle;
+        color: #a0a0a0;
+    }
+    """
+
+    def __init__(self, task_name: str):
+        super().__init__()
+        self.task_name = task_name
+        self.new_name = None
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="edit-dialog"):
+            yield Static("Edit Task Name", id="edit-title")
+            yield Input(value=self.task_name, placeholder="Task name", id="edit-input")
+            yield Static("Press Enter to save, Escape to cancel", id="edit-help")
+
+    def on_mount(self) -> None:
+        self.query_one(Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.new_name = event.value
+        self.dismiss(self.new_name)
+
+    def on_key(self, event) -> None:
+        if event.key == "escape":
+            self.dismiss(None)
 
 
 # --- Textual UI Logic ---
@@ -210,7 +259,9 @@ class TaskBuddyApp(App):
     Footer { background: #373636; color: #a0a0a0; }
     """
 
-    BINDINGS = [("q", "quit", "Quit")]
+    BINDINGS = [
+        ("q", "quit", "Quit"),
+    ]
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -236,6 +287,27 @@ class TaskBuddyApp(App):
         await self.server.start()
 
         self.query_one("#status").update("Server Running on Port 2137 • Waiting for tasks...")
+
+    def on_key(self, event) -> None:
+        """Handle key presses globally"""
+        if event.key == "a":
+            self.adjust_task_time(-1)
+            event.prevent_default()
+            event.stop()
+        elif event.key == "d":
+            self.adjust_task_time(1)
+            event.prevent_default()
+            event.stop()
+        elif event.key == "u":
+            asyncio.create_task(self.action_edit_task_name())
+            event.prevent_default()
+            event.stop()
+        elif event.key == "up":
+            # Allow up arrow to move cursor normally
+            pass
+        elif event.key == "down":
+            # Allow down arrow to move cursor normally
+            pass
 
     async def on_unmount(self) -> None:
         """Cleanup when the app is closed (Ctrl+C or 'q')."""
@@ -303,6 +375,120 @@ class TaskBuddyApp(App):
         self.query_one("#stat-done").update(f"[#a0a0a0]Done:[/] [#50fa7b][b]{done_count}[/b]")
         self.query_one("#stat-todo").update(f"[#a0a0a0]Todo:[/] [#f1fa8c][b]{todo_count}[/b]")
         self.query_one("#stat-overdue").update(f"[#a0a0a0]Overdue:[/] [#ff5555][b]{overdue_count}[/b]")
+
+    def get_selected_task(self):
+        """Get the currently selected task"""
+        table = self.query_one(DataTable)
+        if table.cursor_row is None or table.cursor_row >= table.row_count:
+            return None
+
+        try:
+            # Get the row key from the cursor position
+            row_key = None
+            for idx, key in enumerate(table.rows.keys()):
+                if idx == table.cursor_row:
+                    row_key = key
+                    break
+
+            if row_key is None:
+                return None
+
+            task_id = str(row_key.value)
+
+            for task in self.server.current_tasks:
+                if str(task.get("id")) == task_id:
+                    return task
+        except Exception as e:
+            print(f"Error getting selected task: {e}")
+            import traceback
+            traceback.print_exc()
+
+        return None
+
+    def adjust_task_time(self, minutes_delta: int):
+        """Adjust the selected task's time by the given number of minutes"""
+        task = self.get_selected_task()
+        if not task:
+            print("No task selected")
+            return
+
+        # Save current cursor position
+        table = self.query_one(DataTable)
+        current_row = table.cursor_row
+
+        due_str = task.get('dueTime')
+        if not due_str:
+            print("Task has no due time")
+            return
+
+        try:
+            # Parse current due time
+            due_str = due_str.replace('Z', '+00:00')
+            due_time = datetime.fromisoformat(due_str)
+            if due_time.tzinfo is None:
+                due_time = due_time.replace(tzinfo=timezone.utc)
+
+            # Add minutes (timedelta handles hour rollover automatically)
+            new_due_time = due_time + timedelta(minutes=minutes_delta)
+
+            # Update task
+            task['dueTime'] = new_due_time.isoformat()
+            task['isPreset'] = False  # Mark as manually edited
+
+            print(f"✓ Adjusted '{task['name']}' time by {minutes_delta} min: {new_due_time.strftime('%H:%M')}")
+
+            # Refresh display and broadcast
+            self._refresh_table(self.server.current_tasks)
+            asyncio.create_task(self.sync_tasks_to_webapp())
+
+            # Restore cursor position after refresh
+            if current_row is not None and current_row < table.row_count:
+                table.move_cursor(row=current_row)
+
+        except Exception as e:
+            print(f"Error adjusting time: {e}")
+
+    async def action_decrease_time(self):
+        """Decrease selected task time by 1 minute"""
+        self.adjust_task_time(-1)
+
+    async def action_increase_time(self):
+        """Increase selected task time by 1 minute"""
+        self.adjust_task_time(1)
+
+    async def action_edit_task_name(self):
+        """Edit the selected task's name"""
+        task = self.get_selected_task()
+        if not task:
+            print("No task selected")
+            return
+
+        # Save current cursor position
+        table = self.query_one(DataTable)
+        current_row = table.cursor_row
+
+        current_name = task.get('name', '')
+
+        # Show modal screen for editing
+        result = await self.push_screen_wait(EditTaskScreen(current_name))
+
+        if result and result.strip():  # User pressed Enter with a non-empty value
+            task['name'] = result.strip()
+            task['isPreset'] = False  # Mark as manually edited
+            print(f"✓ Updated task name to: {result}")
+
+            # Refresh display and broadcast
+            self._refresh_table(self.server.current_tasks)
+            asyncio.create_task(self.sync_tasks_to_webapp())
+
+            # Restore cursor position and focus after refresh
+            if current_row is not None and current_row < table.row_count:
+                table.move_cursor(row=current_row)
+            table.focus()
+        else:
+            print("Task name update cancelled or empty")
+            # Just restore focus if cancelled
+            table.focus()
 
     async def sync_tasks_to_webapp(self):
         """Send updated tasks back to the web app on port 2137"""
