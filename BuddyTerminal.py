@@ -320,6 +320,15 @@ class TaskBuddyApp(App):
     def _refresh_table(self, tasks):
         table = self.query_one(DataTable)
 
+        # Save current row key (if any)
+        previous_key = None
+        if table.cursor_row is not None and table.row_count:
+            for idx, key in enumerate(table.rows.keys()):
+                if idx == table.cursor_row:
+                    previous_key = key
+                    break
+
+        # Clear once, before repopulating
         table.clear()
 
         if not isinstance(tasks, list):
@@ -367,6 +376,13 @@ class TaskBuddyApp(App):
                 todo_count += 1
 
             table.add_row(status, time_str, style_name, key=task_id)
+
+        # Restore cursor by key after table is fully rebuilt
+        if previous_key is not None and table.row_count:
+            for idx, key in enumerate(table.rows.keys()):
+                if key == previous_key:
+                    table.move_cursor(row=idx)
+                    break
 
         local_now = datetime.now().strftime("%H:%M:%S")
         self.query_one("#status").update(f"Server Active (Port 2137) • Last Update: {local_now}")
