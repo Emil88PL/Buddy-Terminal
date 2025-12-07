@@ -44,9 +44,6 @@ class TaskServer:
         if not isinstance(tasks, list):
             return tasks
 
-        if not self.should_update_dates():
-            return tasks
-
         now = datetime.now(timezone.utc)
         today = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
 
@@ -74,11 +71,16 @@ class TaskServer:
                     task['alarmTriggered'] = False
                     task['checked'] = False
                     changed = True
-                    print(f"✓ Updated task '{task.get('name')}' date from {task_due_date.date()} to {today.date()}")
+                    print(
+                        f"✓ [TERMINAL] Updated task '{task.get('name')}' date from {task_due_date.date()} to {today.date()}")
 
             except Exception as e:
                 print(f"Error updating date for task {task.get('name')}: {e}")
                 continue
+
+        if changed:
+            # Reset the date check flag when we've made changes
+            self.last_date_check = now
 
         return tasks
 
@@ -169,6 +171,9 @@ class TaskServer:
     async def handle_tasks(self, request):
         try:
             data = await request.json()
+
+            data = self.update_task_dates_to_today(data)
+
             self.current_tasks = data
             self.update_callback(self.current_tasks)
 
@@ -461,6 +466,7 @@ class TaskBuddyApp(App):
 
     def update_tasks(self, tasks):
         """Callback from server to update UI"""
+        tasks = self.server.update_task_dates_to_today(tasks)
         self.call_later(self._refresh_table, tasks)
 
     def _refresh_table(self, tasks):
@@ -590,6 +596,8 @@ class TaskBuddyApp(App):
 
             print(f"✓ Adjusted '{task['name']}' time by {minutes_delta} min: {new_due_time.strftime('%H:%M')}")
 
+            self.server.current_tasks = self.server.update_task_dates_to_today(self.server.current_tasks)
+
             self._refresh_table(self.server.current_tasks)
             asyncio.create_task(self.sync_tasks_to_webapp())
 
@@ -629,6 +637,8 @@ class TaskBuddyApp(App):
             task['isPreset'] = False
             print(f"✓ Updated task name to: '{result.strip()}'")
 
+            self.server.current_tasks = self.server.update_task_dates_to_today(self.server.current_tasks)
+
             self._refresh_table(self.server.current_tasks)
             asyncio.create_task(self.sync_tasks_to_webapp())
 
@@ -656,7 +666,7 @@ class TaskBuddyApp(App):
                     # Parse time (HH:MM format)
                     hours, minutes = map(int, task_time.split(':'))
 
-                    # Create due time for today
+                    # Create due time for TODAY (not a past date)
                     now = datetime.now(timezone.utc)
                     due_time = datetime(
                         now.year, now.month, now.day,
@@ -679,6 +689,8 @@ class TaskBuddyApp(App):
 
                     self.server.current_tasks.append(new_task)
                     print(f"✓ Added new task: '{task_name}' at {task_time}")
+
+                    self.server.current_tasks = self.server.update_task_dates_to_today(self.server.current_tasks)
 
                     self._refresh_table(self.server.current_tasks)
                     asyncio.create_task(self.sync_tasks_to_webapp())
@@ -730,6 +742,9 @@ class TaskBuddyApp(App):
 
             print(f"✓ Deleted task: '{task_name}'")
 
+            # ✅ Ensure dates are current before syncing
+            self.server.current_tasks = self.server.update_task_dates_to_today(self.server.current_tasks)
+
             self._refresh_table(self.server.current_tasks)
             asyncio.create_task(self.sync_tasks_to_webapp())
 
@@ -764,6 +779,9 @@ class TaskBuddyApp(App):
                     task["alarmTriggered"] = False
                 print(f"✓ TOGGLED: {task['name']} → {'DONE' if task['checked'] else 'TODO'}")
 
+                # ✅ Ensure dates are current before syncing
+                self.server.current_tasks = self.server.update_task_dates_to_today(self.server.current_tasks)
+
                 self._refresh_table(self.server.current_tasks)
                 asyncio.create_task(self.sync_tasks_to_webapp())
 
@@ -786,6 +804,9 @@ class TaskBuddyApp(App):
                 if task["checked"]:
                     task["alarmTriggered"] = False
                 print(f"✓ TOGGLED: {task['name']} → {'DONE' if task['checked'] else 'TODO'}")
+
+                # ✅ Ensure dates are current before syncing
+                self.server.current_tasks = self.server.update_task_dates_to_today(self.server.current_tasks)
 
                 self._refresh_table(self.server.current_tasks)
                 asyncio.create_task(self.sync_tasks_to_webapp())
