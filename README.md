@@ -127,4 +127,4 @@ Task Buddy is an Express.js application that reads your tasks out loud using tex
 - Available as executable for Windows and Linux
 ---
 
-Made with ❤️ and Python | [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/N4N51E08N8)
+ [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/N4N51E08N8)
