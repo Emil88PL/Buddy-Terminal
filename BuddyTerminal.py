@@ -2,6 +2,8 @@ import asyncio
 from datetime import datetime, timezone, timedelta
 import traceback
 import json
+import re
+from typing import Optional
 
 from aiohttp import web
 from textual.app import App, ComposeResult
@@ -9,6 +11,96 @@ from textual.widgets import Header, Footer, DataTable, Static, Input
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.worker import Worker, WorkerState
+
+
+WEEK_DAYS = [
+    ("Mon", 1),
+    ("Tue", 2),
+    ("Wed", 3),
+    ("Thu", 4),
+    ("Fri", 5),
+    ("Sat", 6),
+    ("Sun", 0),
+]
+
+DAY_TOKEN_MAP = {
+    "sun": 0,
+    "sunday": 0,
+    "mon": 1,
+    "monday": 1,
+    "tue": 2,
+    "tues": 2,
+    "tuesday": 2,
+    "wed": 3,
+    "wednesday": 3,
+    "thu": 4,
+    "thur": 4,
+    "thurs": 4,
+    "thursday": 4,
+    "fri": 5,
+    "friday": 5,
+    "sat": 6,
+    "saturday": 6,
+}
+
+ALL_DAYS = [0, 1, 2, 3, 4, 5, 6]
+
+
+def _js_day_from_datetime(dt: datetime) -> int:
+    return (dt.weekday() + 1) % 7
+
+
+def _ensure_active_days(task: dict) -> list:
+    active_days = task.get("activeDays")
+    if not isinstance(active_days, list) or len(active_days) == 0:
+        task["activeDays"] = ALL_DAYS.copy()
+    return task["activeDays"]
+
+
+def _is_task_active_on_day(task: dict, js_day: int) -> bool:
+    active_days = task.get("activeDays")
+    if not isinstance(active_days, list) or len(active_days) == 0:
+        return True
+    return js_day in active_days
+
+
+def _format_active_days(active_days: list) -> str:
+    if not isinstance(active_days, list) or len(active_days) == 0 or len(active_days) == 7:
+        return "Every day"
+    return " ".join(label for label, value in WEEK_DAYS if value in active_days)
+
+
+def _parse_active_days_input(text: str) -> Optional[list]:
+    raw = text.strip().lower()
+    if not raw or raw in {"all", "every", "everyday", "every day", "daily"}:
+        return ALL_DAYS.copy()
+
+    tokens = [t for t in re.split(r"[\s,]+", raw) if t]
+    if not tokens:
+        return ALL_DAYS.copy()
+
+    picked = set()
+    for token in tokens:
+        if token.isdigit():
+            day_num = int(token)
+            if 0 <= day_num <= 6:
+                picked.add(day_num)
+            else:
+                return None
+        else:
+            key = token[:3]
+            if key in DAY_TOKEN_MAP:
+                picked.add(DAY_TOKEN_MAP[key])
+            elif token in DAY_TOKEN_MAP:
+                picked.add(DAY_TOKEN_MAP[token])
+            else:
+                return None
+
+    if not picked:
+        return None
+
+    ordered = [value for _, value in WEEK_DAYS if value in picked]
+    return ordered
 
 
 class TaskServer:
@@ -53,6 +145,8 @@ class TaskServer:
             if not due_time_str:
                 continue
 
+            _ensure_active_days(task)
+
             try:
                 due_time_str = due_time_str.replace('Z', '+00:00')
                 task_due = datetime.fromisoformat(due_time_str)
@@ -62,8 +156,9 @@ class TaskServer:
                 task_due_date = datetime(task_due.year, task_due.month, task_due.day, tzinfo=timezone.utc)
 
                 if task_due_date < today:
+                    next_active = self._get_next_active_date(task, today)
                     new_due_time = datetime(
-                        today.year, today.month, today.day,
+                        next_active.year, next_active.month, next_active.day,
                         task_due.hour, task_due.minute, task_due.second, task_due.microsecond,
                         tzinfo=timezone.utc
                     )
@@ -83,6 +178,15 @@ class TaskServer:
             self.last_date_check = now
 
         return tasks
+
+    def _get_next_active_date(self, task: dict, from_date: datetime) -> datetime:
+        active_days = _ensure_active_days(task)
+        for offset in range(0, 7):
+            candidate = from_date + timedelta(days=offset)
+            js_day = _js_day_from_datetime(candidate)
+            if js_day in active_days:
+                return candidate
+        return from_date
 
     async def start(self):
         self.runner = web.AppRunner(self.app)
@@ -261,7 +365,7 @@ class AddTaskScreen(ModalScreen):
 
     #add-dialog {
         width: 60;
-        height: 15;
+        height: 19;
         background: #2a2a2a;
         border: heavy #4a4a4a;
         padding: 1 2;
@@ -288,6 +392,10 @@ class AddTaskScreen(ModalScreen):
     }
 
     #task-name-input, #task-time-input {
+        width: 100%;
+    }
+
+    #task-days-input {
         width: 100%;
     }
 
@@ -318,6 +426,13 @@ class AddTaskScreen(ModalScreen):
                     id="task-time-input",
                 )
 
+            with Vertical(classes="input-container"):
+                yield Static("Active Days (Mon Tue Wed Thu Fri Sat Sun):", classes="input-label")
+                yield Input(
+                    placeholder="Every day",
+                    id="task-days-input",
+                )
+
             yield Static("Tab to switch • Enter to save • Escape to cancel", id="add-help")
 
     def on_mount(self) -> None:
@@ -327,9 +442,10 @@ class AddTaskScreen(ModalScreen):
         """Handle Enter key - collect both inputs and return"""
         task_name = self.query_one("#task-name-input", Input).value.strip()
         task_time = self.query_one("#task-time-input", Input).value.strip()
+        task_days = self.query_one("#task-days-input", Input).value.strip()
 
         if task_name and task_time:
-            self.dismiss({"name": task_name, "time": task_time})
+            self.dismiss({"name": task_name, "time": task_time, "days": task_days})
         else:
             # Focus on the empty field
             if not task_name:
@@ -405,6 +521,69 @@ class DeleteConfirmScreen(ModalScreen):
         self.dismiss(False)
 
 
+# Modal screen for editing active days
+class EditDaysScreen(ModalScreen):
+    CSS = """
+    EditDaysScreen {
+        align: center middle;
+    }
+
+    #days-dialog {
+        width: 60;
+        height: 11;
+        background: #2a2a2a;
+        border: heavy #4a4a4a;
+        padding: 1 2;
+    }
+
+    #days-title {
+        width: 100%;
+        height: 3;
+        content-align: center middle;
+        text-style: bold;
+        color: #49dfb7;
+    }
+
+    #days-input {
+        width: 100%;
+        margin-top: 1;
+        margin-bottom: 1;
+    }
+
+    #days-help {
+        width: 100%;
+        height: 2;
+        content-align: center middle;
+        color: #a0a0a0;
+    }
+    """
+
+    def __init__(self, active_days: list):
+        super().__init__()
+        self.active_days = active_days
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="days-dialog"):
+            yield Static("Edit Active Days", id="days-title")
+            yield Input(
+                value=_format_active_days(self.active_days) if self.active_days else "Every day",
+                placeholder="Mon Tue Wed Thu Fri Sat Sun",
+                id="days-input",
+            )
+            yield Static("Use day names or 0-6 • Enter to save • Escape to cancel", id="days-help")
+
+    def on_mount(self) -> None:
+        input_widget = self.query_one("#days-input", Input)
+        input_widget.focus()
+        input_widget.cursor_position = len(input_widget.value)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.dismiss(event.value)
+
+    def key_escape(self) -> None:
+        self.dismiss(None)
+
+
 # ==================== MAIN APP ====================
 
 class TaskBuddyApp(App):
@@ -430,6 +609,7 @@ class TaskBuddyApp(App):
         ("a", "decrease_time", "Time -1min"),
         ("d", "increase_time", "Time +1min"),
         ("u", "edit_task", "Edit Name"),
+        ("e", "edit_days", "Edit Days"),
         ("n", "add_task", "New Task"),
         ("x", "delete_task", "Delete"),
     ]
@@ -449,7 +629,7 @@ class TaskBuddyApp(App):
 
     async def on_mount(self) -> None:
         table = self.query_one(DataTable)
-        table.add_columns("Status", "Time", "Task Name")
+        table.add_columns("Status", "Time", "Days", "Task Name")
         table.cursor_type = "row"
         table.focus()
         table.zebra_stripes = True
@@ -488,6 +668,8 @@ class TaskBuddyApp(App):
 
         sorted_tasks = sorted(tasks, key=lambda x: x.get('dueTime', ''))
         current_utc = datetime.now(timezone.utc)
+        current_local = datetime.now().astimezone()
+        current_js_day = _js_day_from_datetime(current_local)
 
         total_tasks = len(tasks)
         done_count = todo_count = overdue_count = 0
@@ -497,6 +679,8 @@ class TaskBuddyApp(App):
             is_checked = task.get('checked', False)
             due_str = task.get('dueTime', '')
             task_id = task.get("id", str(hash(name)))
+            active_days = _ensure_active_days(task)
+            active_today = _is_task_active_on_day(task, current_js_day)
 
             time_str = "??:??"
             time_passed = False
@@ -514,7 +698,10 @@ class TaskBuddyApp(App):
                 except Exception:
                     name = f"[dim]{name} (bad date)[/dim]"
 
-            if is_checked:
+            if not active_today:
+                status = "[blue]⏸ INACTIVE[/blue]"
+                style_name = f"[dim]{name}[/dim]"
+            elif is_checked:
                 status = "[green]✔ DONE[/green]"
                 style_name = f"[strike]{name}[/strike]"
                 done_count += 1
@@ -527,7 +714,8 @@ class TaskBuddyApp(App):
                 style_name = name
                 todo_count += 1
 
-            table.add_row(status, time_str, style_name, key=task_id)
+            days_str = _format_active_days(active_days)
+            table.add_row(status, time_str, days_str, style_name, key=task_id)
 
         # Restore cursor
         if previous_key is not None and table.row_count:
@@ -660,11 +848,16 @@ class TaskBuddyApp(App):
         if result and isinstance(result, dict):
             task_name = result.get("name", "").strip()
             task_time = result.get("time", "").strip()
+            task_days_raw = result.get("days", "").strip()
 
             if task_name and task_time:
                 try:
                     # Parse time (HH:MM format)
                     hours, minutes = map(int, task_time.split(':'))
+                    active_days = _parse_active_days_input(task_days_raw)
+                    if active_days is None:
+                        print("❌ Invalid active days. Use Mon Tue Wed Thu Fri Sat Sun or 0-6.")
+                        return
 
                     # Create due time for TODAY (not a past date)
                     now = datetime.now(timezone.utc)
@@ -684,7 +877,8 @@ class TaskBuddyApp(App):
                         "dueTime": due_time.isoformat(),
                         "checked": False,
                         "alarmTriggered": False,
-                        "isPreset": False
+                        "isPreset": False,
+                        "activeDays": active_days,
                     }
 
                     self.server.current_tasks.append(new_task)
@@ -716,6 +910,45 @@ class TaskBuddyApp(App):
     def action_delete_task(self):
         """Delete the selected task - runs in worker"""
         self.run_worker(self._delete_task_worker(), exclusive=True)
+
+    def action_edit_days(self):
+        """Edit the selected task's active days - runs in worker"""
+        self.run_worker(self._edit_days_worker(), exclusive=True)
+
+    async def _edit_days_worker(self):
+        task = self.get_selected_task()
+        if not task:
+            print("No task selected")
+            return
+
+        table = self.query_one(DataTable)
+        current_row = table.cursor_row
+        active_days = _ensure_active_days(task)
+
+        result = await self.push_screen_wait(EditDaysScreen(active_days))
+
+        if result is not None:
+            parsed_days = _parse_active_days_input(result)
+            if parsed_days is None:
+                print("❌ Invalid active days. Use Mon Tue Wed Thu Fri Sat Sun or 0-6.")
+                table.focus()
+                return
+
+            task["activeDays"] = parsed_days
+            task["isPreset"] = False
+            print(f"✓ Updated active days for '{task.get('name', '')}'")
+
+            self.server.current_tasks = self.server.update_task_dates_to_today(self.server.current_tasks)
+
+            self._refresh_table(self.server.current_tasks)
+            asyncio.create_task(self.sync_tasks_to_webapp())
+
+            if current_row is not None and current_row < table.row_count:
+                table.move_cursor(row=current_row)
+            table.focus()
+        else:
+            print("Active days update cancelled")
+            table.focus()
 
     async def _delete_task_worker(self):
         """Worker method for deleting task"""
