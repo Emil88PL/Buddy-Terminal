@@ -1,3 +1,5 @@
+#!/home/mint/Documents/Repo/Buddy-Terminal/venv/bin/python
+
 import asyncio
 from datetime import datetime, timezone, timedelta
 import traceback
