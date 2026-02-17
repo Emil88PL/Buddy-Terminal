@@ -1,4 +1,4 @@
-#!/home/mint/Documents/Repo/Buddy-Terminal/venv/bin/python3
+#!/home/emil/Documents/Repo/Buddy-Terminal/venv/bin/python3
 import sys
 from markdown_it.cli.parse import main
 if __name__ == '__main__':
